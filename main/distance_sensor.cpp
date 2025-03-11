@@ -87,7 +87,7 @@ void app_main() {
         
         gptimer_stop(gptimer);
 
-        // Reading temp in C to incorporate into distance calculation
+        // Calculate distance in feet, taking temperature into account
         double temp = (double)sensor.read_temp_c();
         double c = 331.3 + (0.6 * temp);
         uint64_t pulse_duration = end - start;
