@@ -7,10 +7,10 @@
 class Temp_Sensor {
 
 public:
-    void init();    // Install 
-    float read_temp_c();
-    float read_temp_f();
-    float read_humidity();
+    void init();    // Install I2C driver
+    float read_temp_c();    // Return temperature in celcius
+    float read_temp_f();    // Return temperature in fahrenheit
+    float read_humidity();  // Return percentage humidity
 
 };
 
