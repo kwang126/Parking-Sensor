@@ -11,16 +11,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "DFRobot_LCD.h"
-
-// I2C Configuration
-#define I2C_MASTER_SCL_IO 8        // GPIO for I2C SCL
-#define I2C_MASTER_SDA_IO 10        // GPIO for I2C SDA
-#define I2C_MASTER_NUM I2C_NUM_0    // I2C port number
-#define I2C_MASTER_FREQ_HZ 100000   // I2C master clock frequency
-#define CMD_MEASURE 0x7CA2  // Measure Command
-
-// Sensor I2C Address
-#define SENSOR_I2C_ADDRESS 0x70
+#include "Temp_Sensor.h"
 
 // Distance Sensor
 #define TRIGGER_PIN 4
@@ -32,52 +23,14 @@
 
 extern "C" {
 
-void i2c_master_init() {
-    i2c_config_t conf;
-    conf.clk_flags = 0;
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = I2C_MASTER_SDA_IO;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_io_num = I2C_MASTER_SCL_IO;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = I2C_MASTER_FREQ_HZ;
-    i2c_param_config(I2C_MASTER_NUM, &conf);
-    i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
-}
-
-
-esp_err_t i2c_master_read_sensor(uint16_t mes_cmd, uint8_t *data, size_t size) {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (SENSOR_I2C_ADDRESS << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, mes_cmd >> 8, true);
-    i2c_master_write_byte(cmd, mes_cmd & 0xFF, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, 1000 / portTICK_PERIOD_MS);
-
-    if (ret != ESP_OK) {
-        return ret;
-    }
-
-    vTaskDelay(20 / portTICK_PERIOD_MS);
-
-    i2c_cmd_link_delete(cmd);
-    cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (SENSOR_I2C_ADDRESS << 1) | I2C_MASTER_READ, true);
-    i2c_master_read(cmd, data, size, I2C_MASTER_LAST_NACK);
-    i2c_master_stop(cmd);
-    ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, 1000 / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(cmd);
-    return ret;
-}
-
 void app_main() {
-    i2c_master_init();
+    Temp_Sensor sensor;
+    sensor.init();
     DFRobot_LCD disp = DFRobot_LCD(16, 2);
     disp.init();
     disp.setRGB(0, 255, 0);
 
+    // Configure trigger pin as output
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << TRIGGER_PIN) | (1ULL << ECHO_PIN),
         .mode = GPIO_MODE_OUTPUT,
@@ -86,6 +39,7 @@ void app_main() {
 
     gpio_set_level((gpio_num_t)TRIGGER_PIN, 0);
 
+    // Configure echo pin as input
     io_conf.pin_bit_mask = (1ULL << ECHO_PIN);
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.intr_type = GPIO_INTR_DISABLE;
@@ -93,6 +47,7 @@ void app_main() {
     io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
     gpio_config(&io_conf);
 
+    // Configuring timer to use with USS readouts
     gptimer_handle_t gptimer = NULL;
     gptimer_config_t timer_config = {
         .clk_src = GPTIMER_CLK_SRC_DEFAULT,
@@ -102,11 +57,13 @@ void app_main() {
     gptimer_new_timer(&timer_config, &gptimer);
     gptimer_enable(gptimer);
 
-    int prev_state = -1; // 0 = CONTINUE, 1 = OK, 2 = STOP 
+    int prev_state = -1; // 0 = CONTINUE, 1 = STOP, 2 = BACK UP
 
     while (1) {
+        // Set timer to 0
         gptimer_set_raw_count(gptimer, 0);
 
+        // Trigger USS to send out an ultrasonic wave
         gpio_set_level((gpio_num_t)TRIGGER_PIN, 0);
         esp_rom_delay_us(4);
         gpio_set_level((gpio_num_t)TRIGGER_PIN, 1);
@@ -115,6 +72,7 @@ void app_main() {
         
         gptimer_start(gptimer);
 
+        // Getting start time
         while (gpio_get_level((gpio_num_t)ECHO_PIN) == 0) {
         }
 
@@ -122,56 +80,48 @@ void app_main() {
         gptimer_get_raw_count(gptimer, &start);
         uint64_t end = 0;
 
+        // Getting receive time
         while (gpio_get_level((gpio_num_t)ECHO_PIN) == 1) {
             gptimer_get_raw_count(gptimer, &end);
         }
         
         gptimer_stop(gptimer);
 
-        double temp = 0;
-        uint8_t sensor_data[2] = {0,};
-        esp_err_t err = i2c_master_read_sensor(CMD_MEASURE, sensor_data, 2);
-        
-        if (err == ESP_OK) {
-            uint16_t temp_raw = (sensor_data[0] << 8) | sensor_data[1];
-
-            temp = 175.0 * ((double)temp_raw / 65536.0) - 45.0;
-        } else {
-            printf("Failed to read sensor data\n");
-        }
-
+        // Reading temp in C to incorporate into distance calculation
+        double temp = (double)sensor.read_temp_c();
         double c = 331.3 + (0.6 * temp);
         uint64_t pulse_duration = end - start;
         double distance = ((double)pulse_duration / 1e4) * c / 2;
         double feet = distance / 30.48;
-        printf("Distance: %.1f cm at %.1fC\n", distance, temp);
 
+        // Determine by distance if we need to continue, stop, or back up
         if (distance > THRES_OK && prev_state != 0) {
             disp.setRGB(0, 255, 0);
+            disp.noBlinkLED();
             disp.setCursor(0, 0);
             disp.printstr("                ");
             disp.setCursor(4, 0);
             disp.printstr("CONTINUE");
             prev_state = 0;
-            printf("CONTINUE\n");
         } else if (distance <= THRES_OK && distance > THRES_STOP && prev_state != 1) {
-            disp.setRGB(255, 255, 0);
+            disp.setRGB(255, 0, 0);
+            disp.noBlinkLED();
             disp.setCursor(0, 0);
             disp.printstr("                ");
             disp.setCursor(7, 0);
             disp.printstr("OK");
             prev_state = 1;
-            printf("OK\n");
         } else if (distance <= THRES_STOP && prev_state != 2) {
             disp.setRGB(255, 0, 0);
+            disp.blinkLED();
             disp.setCursor(0, 0);
             disp.printstr("                ");
-            disp.setCursor(6, 0);
-            disp.printstr("STOP");
+            disp.setCursor(4, 0);
+            disp.printstr("BACK UP");
             prev_state = 2;
-            printf("STOP\n");
         }
 
+        // Always update displayed distance in feet
         disp.setCursor(0, 1);
         disp.printstr("                ");
         disp.setCursor(5, 1);
