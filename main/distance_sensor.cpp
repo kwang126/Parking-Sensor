@@ -10,6 +10,7 @@
 #include "soc/clk_tree_defs.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_sleep.h"
 #include "DFRobot_LCD.h"
 #include "Temp_Sensor.h"
 
@@ -17,13 +18,20 @@
 #define TRIGGER_PIN 4
 #define ECHO_PIN 5
 
+// Motion Sensor
+#define MOTION_PIN 3
+
 // Thresholds
 #define THRES_OK 99
 #define THRES_STOP 55
 
 extern "C" {
 
-void app_main() {
+void distance_task(void *pvParameter) {
+    UBaseType_t uxHighWaterMark;
+    uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+    printf("%d words leftover in distance_task\n", (int)uxHighWaterMark);
+
     Temp_Sensor sensor;
     sensor.init();
     DFRobot_LCD disp = DFRobot_LCD(16, 2);
@@ -36,7 +44,6 @@ void app_main() {
         .mode = GPIO_MODE_OUTPUT,
     };
     gpio_config(&io_conf);
-
     gpio_set_level((gpio_num_t)TRIGGER_PIN, 0);
 
     // Configure echo pin as input
@@ -84,7 +91,7 @@ void app_main() {
         while (gpio_get_level((gpio_num_t)ECHO_PIN) == 1) {
             gptimer_get_raw_count(gptimer, &end);
         }
-        
+
         gptimer_stop(gptimer);
 
         // Calculate distance in feet, taking temperature into account
@@ -131,6 +138,18 @@ void app_main() {
         disp.printstr(feet_string.c_str());
 
         vTaskDelay(200 / portTICK_PERIOD_MS);
+
+        uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+        printf("%d words leftover in distance_task\n", (int)uxHighWaterMark);
     }
+}
+
+void app_main() {
+    // Configure motion sensor pin as input and wakeup source
+    /*io_conf.pin_bit_mask = (1ULL << MOTION_PIN);
+    gpio_config(&io_conf);
+    esp_deep_sleep_enable_gpio_wakeup(1ULL << MOTION_PIN, ESP_GPIO_WAKEUP_GPIO_HIGH);*/
+
+    xTaskCreate(&distance_task, "distance_task", 3000, NULL, 5, NULL);
 }
 }
