@@ -1,4 +1,5 @@
 ﻿#include <stdio.h>
+#include <time.h>
 #include <string>
 #include <sstream>
 #include <iomanip>
@@ -24,6 +25,7 @@
 // Thresholds
 #define THRES_OK 99
 #define THRES_STOP 55
+#define TIME_TO_SLEEP 10
 
 extern "C" {
 
@@ -54,6 +56,11 @@ void distance_task(void *pvParameter) {
     io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
     gpio_config(&io_conf);
 
+    // Configure motion sensor pin as wakeup source
+    gpio_hold_dis((gpio_num_t)MOTION_PIN);
+    gpio_deep_sleep_hold_dis();
+    esp_deep_sleep_enable_gpio_wakeup(1ULL << MOTION_PIN, ESP_GPIO_WAKEUP_GPIO_HIGH);
+
     // Configuring timer to use with USS readouts
     gptimer_handle_t gptimer = NULL;
     gptimer_config_t timer_config = {
@@ -64,7 +71,19 @@ void distance_task(void *pvParameter) {
     gptimer_new_timer(&timer_config, &gptimer);
     gptimer_enable(gptimer);
 
+    // Timer that determines when to go into deep sleep
+    gptimer_handle_t sleep_timer = NULL;
+    gptimer_new_timer(&timer_config, &sleep_timer);
+    gptimer_enable(sleep_timer);
+    gptimer_set_raw_count(sleep_timer, 0);
+    gptimer_start(sleep_timer);
+
     int prev_state = -1; // 0 = CONTINUE, 1 = STOP, 2 = BACK UP
+
+    // Variables used to determine change in distance and time for deep sleep
+    int curr_distance = -1;
+    int prev_distance = -1;
+    uint64_t sleep_timer_count = 0;
 
     while (1) {
         // Set timer to 0
@@ -101,6 +120,25 @@ void distance_task(void *pvParameter) {
         double distance = ((double)pulse_duration / 1e4) * c / 2;
         double feet = distance / 30.48;
 
+        curr_distance = (int)feet;
+        gptimer_get_raw_count(sleep_timer, &sleep_timer_count);
+        double time_since_change = sleep_timer_count / 1e6;
+
+        // If distance changes, reset sleep timer
+        // If distance hasn't changed for set amount of time, go into deep sleep
+        if (prev_distance != curr_distance) {
+            prev_distance = curr_distance;
+            gptimer_set_raw_count(sleep_timer, 0);
+        } else {
+            if (time_since_change >= (double)TIME_TO_SLEEP) {
+                disp.noDisplay();
+                disp.setRGB(0, 0, 0);
+                gpio_hold_en((gpio_num_t)MOTION_PIN);
+                gpio_deep_sleep_hold_en();
+                esp_deep_sleep_start();
+            }
+        }
+
         // Determine by distance if we need to continue, stop, or back up
         if (distance > THRES_OK && prev_state != 0) {
             disp.setRGB(0, 255, 0);
@@ -115,11 +153,11 @@ void distance_task(void *pvParameter) {
             disp.noBlinkLED();
             disp.setCursor(0, 0);
             disp.printstr("                ");
-            disp.setCursor(7, 0);
-            disp.printstr("OK");
+            disp.setCursor(6, 0);
+            disp.printstr("STOP");
             prev_state = 1;
         } else if (distance <= THRES_STOP && prev_state != 2) {
-            disp.setRGB(255, 0, 0);
+            disp.setRGB(255,90, 0);
             disp.blinkLED();
             disp.setCursor(0, 0);
             disp.printstr("                ");
@@ -145,11 +183,6 @@ void distance_task(void *pvParameter) {
 }
 
 void app_main() {
-    // Configure motion sensor pin as input and wakeup source
-    /*io_conf.pin_bit_mask = (1ULL << MOTION_PIN);
-    gpio_config(&io_conf);
-    esp_deep_sleep_enable_gpio_wakeup(1ULL << MOTION_PIN, ESP_GPIO_WAKEUP_GPIO_HIGH);*/
-
     xTaskCreate(&distance_task, "distance_task", 3000, NULL, 5, NULL);
 }
 }
