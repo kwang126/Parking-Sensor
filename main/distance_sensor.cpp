@@ -1,5 +1,4 @@
 ﻿#include <stdio.h>
-#include <time.h>
 #include <string>
 #include <sstream>
 #include <iomanip>
@@ -129,14 +128,12 @@ void distance_task(void *pvParameter) {
         if (prev_distance != curr_distance) {
             prev_distance = curr_distance;
             gptimer_set_raw_count(sleep_timer, 0);
-        } else {
-            if (time_since_change >= (double)TIME_TO_SLEEP) {
-                disp.noDisplay();
-                disp.setRGB(0, 0, 0);
-                gpio_hold_en((gpio_num_t)MOTION_PIN);
-                gpio_deep_sleep_hold_en();
-                esp_deep_sleep_start();
-            }
+        } else if (time_since_change >= (double)TIME_TO_SLEEP) {
+            disp.noDisplay();
+            disp.setRGB(0, 0, 0);
+            gpio_hold_en((gpio_num_t)MOTION_PIN);
+            gpio_deep_sleep_hold_en();
+            esp_deep_sleep_start();
         }
 
         // Determine by distance if we need to continue, stop, or back up
